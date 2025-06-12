@@ -8,11 +8,8 @@ from typing import AsyncGenerator, Callable, Dict, Any, Optional, Type, Union, L
 from ray import serve
 from ray._common.utils import import_attr
 # vllm imports Needs abstractions/wrapper types
-from vllm.entrypoints.openai.tool_parsers import ToolParser, ToolParserManager
-from vllm.entrypoints.openai.protocol import (
-    DeltaToolCall,
-    DeltaFunctionCall,
-)
+from ray.llm._internal.serve.deployments.llm.llm_tool_parser import LLMToolParser, LLMToolParserManager
+from ray.llm._internal.serve.deployments.llm.vllm.vllm_tool_parser import VLLMToolParserManager
 from vllm.entrypoints.openai.tool_parsers.mistral_tool_parser import MistralToolCall
 from vllm.transformers_utils.tokenizer import AnyTokenizer, MistralTokenizer
 
@@ -39,7 +36,9 @@ from ray.llm._internal.serve.configs.openai_api_models import (
     CompletionResponseChoice,
     CompletionResponseStreamChoice,
     CompletionStreamResponse,
+    DeltaFunctionCall,
     DeltaMessage,
+    DeltaToolCall,
     LLMChatResponse,
     LLMCompletionsResponse,
     UsageInfo,
@@ -142,7 +141,7 @@ class ResponsePostprocessor:
         generator: AsyncGenerator[LLMRawResponse, None],
         request: ChatCompletionRequest,
         tokenizer: AnyTokenizer,
-        tool_parser: Optional[Callable[[AnyTokenizer], ToolParser]] = None,
+        tool_parser: Optional[LLMToolParser] = None,
     ) -> AsyncGenerator[Union[ChatCompletionStreamResponse, ErrorResponse], None]:
         had_error = False
         request_id = get_serve_request_id()
@@ -186,9 +185,7 @@ class ResponsePostprocessor:
         # Prepare the tool parser if it's needed
         try:
             if tool_choice_auto and tool_parser:
-                tool_parsers: list[Optional[ToolParser]] = [
-                    tool_parser(tokenizer)
-                ] * num_choices
+                tool_parsers: list[Optional[LLMToolParser]] = [tool_parser] * num_choices
             else:
                 tool_parsers = [None] * num_choices
         except Exception as e:
@@ -214,7 +211,7 @@ class ResponsePostprocessor:
 
                     else:
                         i = result.index or 0
-                        _tool_parser = tool_parsers[i]
+                        index_tool_parser = tool_parsers[i]
                         delta_text = result.generated_text or ""
                         finish_reason = result.finish_reason
 
@@ -296,8 +293,8 @@ class ResponsePostprocessor:
                             previous_texts[i] = current_text
                         
                         elif tool_choice_auto:
-                            assert _tool_parser is not None
-                            vllm_delta_message = _tool_parser.extract_tool_calls_streaming(
+                            assert index_tool_parser is not None
+                            tool_parsed_delta_message = index_tool_parser.extract_tool_calls_streaming(
                                 previous_text=previous_text,
                                 current_text=current_text,
                                 delta_text=delta_text,
@@ -306,22 +303,8 @@ class ResponsePostprocessor:
                                 delta_token_ids=result.token_ids,
                                 request=request
                             )
-                            if vllm_delta_message:
-                                delta_message.role = vllm_delta_message.role
-                                delta_message.content = vllm_delta_message.content
-                                delta_message.reasoning_content = vllm_delta_message.reasoning_content
-                                for tool_call in vllm_delta_message.tool_calls:
-                                    delta_message.tool_calls.append(
-                                        DeltaToolCall(
-                                            id=tool_call.id,
-                                            type=tool_call.type,
-                                            index=tool_call.index,
-                                            function=DeltaFunctionCall(
-                                                name=tool_call.function.name,
-                                                arguments=tool_call.function.arguments,
-                                            ),
-                                        )   
-                                    )
+                            if tool_parsed_delta_message:
+                                delta_message = tool_parsed_delta_message
                             
                         # update the previous values for the next iteration
                         if tool_choice_auto:
@@ -464,7 +447,7 @@ class ResponsePostprocessor:
         gen: AsyncGenerator[LLMRawResponse, None], 
         stream: bool,
         tokenizer: AnyTokenizer,
-        tool_parser: Optional[Callable[[AnyTokenizer], ToolParser]] = None,
+        tool_parser: Optional[LLMToolParser] = None,
     ) -> LLMChatResponse:
         gen = self.handle_failure(model=model, gen=gen)
 
@@ -522,14 +505,7 @@ class ResponsePostprocessor:
                 request.tool_choice == "auto"
                 or request.tool_choice is None) and self.enable_auto_tools \
                     and tool_parser:
-
-                try:
-                    usable_tool_parser = tool_parser(tokenizer)
-                except Exception as e:
-                    logger.exception("Error in tool parser creation.")
-                    raise e
-              
-                tool_call_info = usable_tool_parser.extract_tool_calls(
+                tool_call_info = tool_parser.extract_tool_calls(
                     generated_text, request=request
                 )
                 logger.info(f"Tool call info: {tool_call_info}")
@@ -644,21 +620,26 @@ class LLMServer(_LLMServerBase):
         self.engine = self._get_engine_class(self._llm_config)
         await asyncio.wait_for(self._start_engine(), timeout=ENGINE_START_TIMEOUT_S)
 
+        self.tokenizer = self.engine.get_tokenizer()
+
         # set up tool use
-        self.enable_auto_tools: bool = llm_config.enable_auto_tools
-        self.tool_parser: Optional[Callable[[AnyTokenizer], ToolParser]] = None
-        if self.enable_auto_tools:
+        enable_auto_tools: bool = llm_config.enable_auto_tools
+        tool_parser_manager: Optional[LLMToolParserManager] = None
+        if isinstance(self.engine, VLLMEngine):
+            logger.info("Using VLLMToolParserManager for tool parsing.")
+            tool_parser_manager = VLLMToolParserManager(self.tokenizer)
+
+        if enable_auto_tools and tool_parser_manager:
             try:
-                self.tool_parser = ToolParserManager.get_tool_parser(
+                self.tool_parser = tool_parser_manager.get_tool_parser(
                     llm_config.tool_parser)
             except Exception as e:
                 raise TypeError("Error: --enable-auto-tool-choice requires "
                                 f"tool_parser:'{llm_config.tool_parser}' which has not "
                                 "been registered") from e
             
-        self.tokenizer = self.engine.get_tokenizer()
         self.response_postprocessor = ResponsePostprocessor(
-            enable_auto_tools=llm_config.enable_auto_tools,
+            enable_auto_tools=enable_auto_tools,
         )
 
         self.image_retriever = (
