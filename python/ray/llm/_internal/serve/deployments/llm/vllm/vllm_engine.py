@@ -58,12 +58,15 @@ from ray.llm._internal.serve.deployments.utils.batcher import LLMRawResponsesBat
 
 from ray.llm._internal.serve.deployments.llm.llm_engine import LLMEngine
 
+from vllm.transformers_utils.tokenizer import AnyTokenizer
+
 if TYPE_CHECKING:
     from vllm.config import ModelConfig, VllmConfig
     from vllm.engine.arg_utils import AsyncEngineArgs
     from vllm.engine.protocol import EngineClient
     from vllm.outputs import RequestOutput
     from vllm.sampling_params import SamplingParams as VLLMInternalSamplingParams
+
 
 vllm = try_import("vllm")
 logger = get_logger(__name__)
@@ -527,6 +530,9 @@ class VLLMEngine(LLMEngine):
         if stream_batching_interval_ms is None:
             stream_batching_interval_ms = MODEL_RESPONSE_BATCH_TIMEOUT_MS
         return stream_batching_interval_ms if stream else None
+    
+    def get_tokenizer(self) -> AnyTokenizer:
+        return self._tokenizer
 
     async def generate(
         self,

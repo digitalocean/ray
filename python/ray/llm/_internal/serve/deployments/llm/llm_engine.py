@@ -8,6 +8,8 @@ from ray.llm._internal.serve.configs.server_models import (
     DiskMultiplexConfig,
 )
 
+# needs abstraction
+from vllm.transformers_utils.tokenizer import AnyTokenizer
 
 import abc
 
@@ -64,4 +66,9 @@ class LLMEngine(abc.ABC):
 
     def shutdown(self):
         """Shuts down the engine"""
+        pass
+    
+    # AnyTokenizer needs abstraction
+    def get_tokenizer(self) -> AnyTokenizer:
+        """Gets the tokenizer"""
         pass

@@ -1,11 +1,13 @@
 import asyncio
 import os
 from abc import ABC, abstractmethod
-from typing import AsyncGenerator, Dict, Any, Optional, Type, Union
+from typing import AsyncGenerator, Callable, Dict, Any, Optional, Type, Union, List
 
 # Third-party imports
 from ray import serve
 from ray._common.utils import import_attr
+from vllm.entrypoints.openai.tool_parsers import ToolParser, ToolParserManager
+from vllm.transformers_utils.tokenizer import AnyTokenizer
 
 # Local imports
 from ray.llm._internal.serve.configs.constants import (
@@ -33,6 +35,8 @@ from ray.llm._internal.serve.configs.openai_api_models import (
     LLMChatResponse,
     LLMCompletionsResponse,
     UsageInfo,
+    ToolCall,
+    FunctionCall,
 )
 from ray.llm._internal.serve.configs.openai_api_models_patch import (
     ErrorResponse,
@@ -104,8 +108,12 @@ class _LLMServerBase(ABC):
 
 
 class ResponsePostprocessor:
-    def __init__(self):
+    def __init__(
+        self,
+        enable_auto_tools: bool = False,
+    ) -> None:
         self.metrics_wrapper = StreamingErrorHandler()
+        self.enable_auto_tools: bool = enable_auto_tools
 
     async def handle_failure(
         self, model: str, gen: AsyncGenerator[LLMRawResponse, None]
@@ -307,7 +315,13 @@ class ResponsePostprocessor:
             yield get_response_for_error(e, request_id).error
 
     async def process_chat(
-        self, model: str, gen: AsyncGenerator[LLMRawResponse, None], stream: bool
+        self, 
+        request: ChatCompletionRequest,
+        model: str, 
+        gen: AsyncGenerator[LLMRawResponse, None], 
+        stream: bool,
+        tokenizer: AnyTokenizer,
+        tool_parser: Optional[Callable[[AnyTokenizer], ToolParser]] = None,
     ) -> LLMChatResponse:
         gen = self.handle_failure(model=model, gen=gen)
 
@@ -343,14 +357,38 @@ class ResponsePostprocessor:
                     ]
                 )
 
+            message = ChatMessage(
+                role="assistant",
+                content=results.generated_text or "",
+            )
+            
+            # Handle tool calling extraction
+            auto_tools_called = False
+            if request.tools and (
+                request.tool_choice == "auto"
+                or request.tool_choice is None) and self.enable_auto_tools \
+                    and tool_parser:
+                try:
+                    usable_tool_parser = tool_parser(tokenizer)
+                except RuntimeError as e:
+                    logger.exception("Error in tool parser creation.")
+                    raise e
+              
+                tool_call_info = usable_tool_parser.extract_tool_calls(
+                    results.generated_text or "", request=request #request isnt used for anything in relevant tool parsers
+                )
+                logger.info(f"Tool call info: {tool_call_info}")
+                auto_tools_called = tool_call_info.tools_called
+                if tool_call_info.tools_called:
+                    message.tool_calls = tool_call_info.tool_calls
+                    message.content = tool_call_info.content
+                    
+
             choices = [
                 ChatCompletionResponseChoice(
-                    message=ChatMessage(
-                        role="assistant",
-                        content=results.generated_text or "",
-                    ),
+                    message=message,
                     index=0,
-                    finish_reason=results.finish_reason,
+                    finish_reason="tool_calls" if auto_tools_called else results.finish_reason,
                     logprobs=logprobs,
                 )
             ]
@@ -416,6 +454,8 @@ class LLMServer(_LLMServerBase):
         engine_cls: Optional[Type[VLLMEngine]] = None,
         image_retriever_cls: Optional[Type[ImageRetriever]] = None,
         model_downloader: Optional[LoraModelLoader] = None,
+        enable_auto_tools: bool = False,
+        tool_parser: Optional[str] = None,
     ):
         """Constructor of LLMServer.
 
@@ -439,6 +479,23 @@ class LLMServer(_LLMServerBase):
         self.engine = self._get_engine_class(self._llm_config)
         await asyncio.wait_for(self._start_engine(), timeout=ENGINE_START_TIMEOUT_S)
 
+        # set up tool use
+        self.enable_auto_tools: bool = enable_auto_tools
+        self.tool_parser: Optional[Callable[[AnyTokenizer], ToolParser]] = None
+        if self.enable_auto_tools:
+            try:
+                self.tool_parser = ToolParserManager.get_tool_parser(
+                    tool_parser)
+            except Exception as e:
+                raise TypeError("Error: --enable-auto-tool-choice requires "
+                                f"tool_parser:'{tool_parser}' which has not "
+                                "been registered") from e
+            
+        self.tokenizer = self.engine.get_tokenizer()
+        self.response_postprocessor = ResponsePostprocessor(
+            enable_auto_tools=enable_auto_tools,
+        )
+
         self.image_retriever = (
             image_retriever_cls()
             if image_retriever_cls
@@ -461,8 +518,6 @@ class LLMServer(_LLMServerBase):
             self.load_model = serve.multiplexed(
                 max_num_models_per_replica=multiplex_config.max_num_models_per_replica
             )(lambda lora_model_id: self._load_model(lora_model_id))
-
-        self.response_postprocessor = ResponsePostprocessor()
 
     @property
     def _get_engine_class(self) -> Type[LLMEngine]:
@@ -542,7 +597,7 @@ class LLMServer(_LLMServerBase):
         stream = request.stream
         gen = self._predict(request_id=request_id, prompt=prompt, stream=stream)
         return self.response_postprocessor.process_chat(
-            model=self._llm_config.model_id, gen=gen, stream=stream
+            request=request, model=self._llm_config.model_id, gen=gen, stream=stream, tool_parser=self.tool_parser, tokenizer=self.tokenizer
         )
 
     async def completions(self, request: CompletionRequest) -> LLMCompletionsResponse:
