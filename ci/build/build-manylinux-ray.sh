@@ -13,5 +13,6 @@ fi
 
 # Build ray dashboard
 cd python/ray/dashboard/client
+npm config set registry https://registry.npmmirror.com
 npm ci
 npm run build

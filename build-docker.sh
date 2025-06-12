@@ -7,7 +7,7 @@ GPU=""
 BASE_IMAGE="ubuntu:22.04"
 WHEEL_URL="https://s3-us-west-2.amazonaws.com/ray-wheels/latest/ray-3.0.0.dev0-cp39-cp39-manylinux2014_x86_64.whl"
 CPP_WHEEL_URL="https://s3-us-west-2.amazonaws.com/ray-wheels/latest/ray_cpp-3.0.0.dev0-cp39-cp39-manylinux2014_x86_64.whl"
-PYTHON_VERSION="3.9"
+PYTHON_VERSION="3.11"
 
 BUILD_ARGS=()
 
@@ -15,7 +15,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --gpu)
             GPU="-gpu"
-            BASE_IMAGE="nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04"
+            BASE_IMAGE="nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04"
         ;;
         --base-image)
             # Override for the base image.
@@ -87,8 +87,8 @@ fi
 
 RAY_BUILD_DIR="$(mktemp -d)"
 mkdir -p "$RAY_BUILD_DIR/.whl"
-wget --quiet "$WHEEL_URL" -P "$RAY_BUILD_DIR/.whl"
-wget --quiet "$CPP_WHEEL_URL" -P "$RAY_BUILD_DIR/.whl"
+cp .whl/ray-2.46.0-cp311-cp311-manylinux2014_x86_64.whl "$RAY_BUILD_DIR/.whl/"
+cp .whl/ray_cpp-2.46.0-cp311-cp311-manylinux2014_x86_64.whl "$RAY_BUILD_DIR/.whl/"
 cp docker/ray/Dockerfile "$RAY_BUILD_DIR"
 
 WHEEL="$(basename "$WHEEL_DIR"/.whl/ray-*.whl)"

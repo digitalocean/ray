@@ -33,7 +33,7 @@ nvm install "$NODE_VERSION"
 nvm use "$NODE_VERSION"
 
 # Install bazel
-npm install -g @bazel/bazelisk
+npm install -g @bazel/bazelisk --registry=https://registry.npmmirror.com
 ln -sf "$(which bazelisk)" /usr/local/bin/bazel
 
 {
