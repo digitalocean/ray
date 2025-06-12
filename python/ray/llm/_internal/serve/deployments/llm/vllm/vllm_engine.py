@@ -485,6 +485,16 @@ class VLLMEngine(LLMEngine):
         model_config = self.model_config
         mm_data = None
 
+        # Extract tools from parameters
+        tools = None
+        if prompt.parameters and isinstance(prompt.parameters, dict):
+            tools = prompt.parameters.get("tools")
+
+        # Extract chat template
+        chat_template = None
+        if prompt.parameters and isinstance(prompt.parameters, dict):
+            chat_template = prompt.parameters.get("chat_template")
+
         if isinstance(prompt.prompt, list):
             messages = [m.model_dump() for m in prompt.prompt]
             conversation, mm_futures = parse_chat_messages_futures(
@@ -498,11 +508,10 @@ class VLLMEngine(LLMEngine):
             prompt_text = apply_hf_chat_template(
                 tokenizer=self._tokenizer,
                 conversation=conversation,
-                chat_template=None,
-                tools=None,
+                chat_template=chat_template,
+                tools=tools,
                 trust_remote_code=model_config.trust_remote_code,
                 tokenize=False,
-                # **kwargs for tokenizer.apply_chat_template
                 add_generation_prompt=True,
                 continue_final_message=False,
             )

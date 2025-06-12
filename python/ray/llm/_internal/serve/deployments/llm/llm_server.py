@@ -155,7 +155,6 @@ class ResponsePostprocessor:
         # TODO: use request.N
         num_choices = 1
         previous_num_tokens = [0] * num_choices
-        num_prompt_tokens = 0 
 
         if isinstance(request.tool_choice, ChatCompletionNamedToolChoiceParam):
             tool_choice_function_name = request.tool_choice.function.name
@@ -283,7 +282,7 @@ class ResponsePostprocessor:
                             assert function_name_returned is not None
                             previous_text = previous_texts[i]
                             current_text = previous_text + delta_text
-                            fn_name_returned = function_name_returned[i]
+                            #fn_name_returned = function_name_returned[i]
 
                             # TODO
                             # delta_message, function_name_returned[i] = (
@@ -307,7 +306,6 @@ class ResponsePostprocessor:
                                 delta_token_ids=result.token_ids,
                                 request=request
                             )
-                            # logger.info(f"vllm_delta_message: {vllm_delta_message}")
                             if vllm_delta_message:
                                 delta_message.role = vllm_delta_message.role
                                 delta_message.content = vllm_delta_message.content
@@ -351,14 +349,12 @@ class ResponsePostprocessor:
                             )
                         ]
 
-
                         resp = ChatCompletionStreamResponse(
                             id=completion_id,
                             model=model,
                             choices=choices,
                             usage=None,
                         )
-                        # logger.info(f"Yielding response: {resp}")
                         yield resp
 
                 if had_error:
@@ -625,8 +621,6 @@ class LLMServer(_LLMServerBase):
         engine_cls: Optional[Type[VLLMEngine]] = None,
         image_retriever_cls: Optional[Type[ImageRetriever]] = None,
         model_downloader: Optional[LoraModelLoader] = None,
-        enable_auto_tools: bool = False,
-        tool_parser: Optional[str] = None,
     ):
         """Constructor of LLMServer.
 
@@ -651,20 +645,20 @@ class LLMServer(_LLMServerBase):
         await asyncio.wait_for(self._start_engine(), timeout=ENGINE_START_TIMEOUT_S)
 
         # set up tool use
-        self.enable_auto_tools: bool = enable_auto_tools
+        self.enable_auto_tools: bool = llm_config.enable_auto_tools
         self.tool_parser: Optional[Callable[[AnyTokenizer], ToolParser]] = None
         if self.enable_auto_tools:
             try:
                 self.tool_parser = ToolParserManager.get_tool_parser(
-                    tool_parser)
+                    llm_config.tool_parser)
             except Exception as e:
                 raise TypeError("Error: --enable-auto-tool-choice requires "
-                                f"tool_parser:'{tool_parser}' which has not "
+                                f"tool_parser:'{llm_config.tool_parser}' which has not "
                                 "been registered") from e
             
         self.tokenizer = self.engine.get_tokenizer()
         self.response_postprocessor = ResponsePostprocessor(
-            enable_auto_tools=enable_auto_tools,
+            enable_auto_tools=llm_config.enable_auto_tools,
         )
 
         self.image_retriever = (

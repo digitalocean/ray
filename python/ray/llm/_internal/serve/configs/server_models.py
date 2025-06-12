@@ -237,6 +237,16 @@ class LLMConfig(BaseModelExtended):
         "router replicas per model replica.\n",
     )
 
+    enable_auto_tools: bool = Field(
+        default=False,
+        description="Whether to enable automatic tool detection and parsing. "
+    )
+
+    tool_parser: Optional[str] = Field(
+        default=None,
+        description="The tool parser to use for parsing tool calls. "
+    )
+
     _supports_vision: bool = PrivateAttr(False)
     _model_architecture: str = PrivateAttr("")
     _prompt_format: HuggingFacePromptFormat = PrivateAttr(
