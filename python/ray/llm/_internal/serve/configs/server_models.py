@@ -711,6 +711,8 @@ class LLMRawResponse(ComputedPropertyMixin, BaseModelExtended):
     """
 
     generated_text: Optional[str] = None
+    index: Optional[int] = None
+    token_ids: Optional[Sequence] = None
     logprobs: Optional[List[LogProbs]] = None
     num_input_tokens: Optional[int] = None
     num_input_tokens_batch: Optional[int] = None
@@ -801,8 +803,16 @@ class LLMRawResponse(ComputedPropertyMixin, BaseModelExtended):
             if response.logprobs:
                 logprobs.extend(response.logprobs)
 
+        token_ids_list = [
+            token_id for response in responses
+            if response.token_ids is not None
+            for token_id in response.token_ids
+        ]
+        token_ids = token_ids_list if token_ids_list else None
+
         return cls(
             generated_text=generated_text,
+            token_ids=token_ids,
             logprobs=logprobs,
             num_input_tokens=max_num_input_tokens,
             num_input_tokens_batch=max_num_input_tokens_batch,

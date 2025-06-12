@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator, Callable, Dict, Any, Optional, Type, Union, List
@@ -6,8 +7,14 @@ from typing import AsyncGenerator, Callable, Dict, Any, Optional, Type, Union, L
 # Third-party imports
 from ray import serve
 from ray._common.utils import import_attr
+# vllm imports Needs abstractions/wrapper types
 from vllm.entrypoints.openai.tool_parsers import ToolParser, ToolParserManager
-from vllm.transformers_utils.tokenizer import AnyTokenizer
+from vllm.entrypoints.openai.protocol import (
+    DeltaToolCall,
+    DeltaFunctionCall,
+)
+from vllm.entrypoints.openai.tool_parsers.mistral_tool_parser import MistralToolCall
+from vllm.transformers_utils.tokenizer import AnyTokenizer, MistralTokenizer
 
 # Local imports
 from ray.llm._internal.serve.configs.constants import (
@@ -25,6 +32,7 @@ from ray.llm._internal.serve.configs.openai_api_models import (
     ChatCompletionResponseChoice,
     ChatCompletionResponseStreamChoice,
     ChatCompletionStreamResponse,
+    ChatCompletionNamedToolChoiceParam,
     ChatMessage,
     CompletionRequest,
     CompletionResponse,
@@ -128,10 +136,13 @@ class ResponsePostprocessor:
         responses = [resp async for resp in response_stream]
         return LLMRawResponse.merge_stream(*responses)
 
-    @staticmethod
     async def _chat_completions_wrapper(
+        self,
         model: str,
         generator: AsyncGenerator[LLMRawResponse, None],
+        request: ChatCompletionRequest,
+        tokenizer: AnyTokenizer,
+        tool_parser: Optional[Callable[[AnyTokenizer], ToolParser]] = None,
     ) -> AsyncGenerator[Union[ChatCompletionStreamResponse, ErrorResponse], None]:
         had_error = False
         request_id = get_serve_request_id()
@@ -140,6 +151,51 @@ class ResponsePostprocessor:
 
         yielded_role = False
         all_results = []
+
+        # TODO: use request.N
+        num_choices = 1
+        previous_num_tokens = [0] * num_choices
+        num_prompt_tokens = 0 
+
+        if isinstance(request.tool_choice, ChatCompletionNamedToolChoiceParam):
+            tool_choice_function_name = request.tool_choice.function.name
+        else:
+            tool_choice_function_name = None
+
+        # Determine whether tools are in use with "auto" tool choice
+        tool_choice_auto = (
+            not tool_choice_function_name
+            and (request.tools and tool_parser and self.enable_auto_tools
+                and request.tool_choice in ['auto', None]))
+        
+        all_previous_token_ids: Optional[list[list[int]]]
+        function_name_returned: Optional[list[bool]] = None
+
+        # Only one of these will be used, thus previous_texts and
+        # all_previous_token_ids will not be used twice in the same iteration.
+        if tool_choice_auto:
+            # These are only required in "auto" tool choice case
+            previous_texts = [""] * num_choices
+            all_previous_token_ids = [[]] * num_choices
+        elif request.tool_choice == "required":
+            previous_texts = [""] * num_choices
+            function_name_returned = [False] * num_choices
+            all_previous_token_ids = None
+        else:
+            previous_texts, all_previous_token_ids = None, None
+
+        # Prepare the tool parser if it's needed
+        try:
+            if tool_choice_auto and tool_parser:
+                tool_parsers: list[Optional[ToolParser]] = [
+                    tool_parser(tokenizer)
+                ] * num_choices
+            else:
+                tool_parsers = [None] * num_choices
+        except Exception as e:
+            logger.exception("Error in tool parser creation.")
+            raise e
+        
         try:
             async for batched_results in generator:
                 for result in batched_results.unpack():
@@ -158,7 +214,24 @@ class ResponsePostprocessor:
                         break
 
                     else:
+                        i = result.index or 0
+                        _tool_parser = tool_parsers[i]
+                        delta_text = result.generated_text or ""
                         finish_reason = result.finish_reason
+
+                        delta_message = DeltaMessage(
+                            content=delta_text,
+                        )
+
+                        # just update previous_texts and previous_token_ids
+                        if tool_choice_auto:
+                            assert previous_texts is not None
+                            assert all_previous_token_ids is not None
+                            previous_text = previous_texts[i]
+                            previous_token_ids = all_previous_token_ids[i]
+                            current_text = previous_text + delta_text
+                            current_token_ids = previous_token_ids + list(
+                                result.token_ids)
 
                         if not yielded_role:
                             choices = [
@@ -198,21 +271,95 @@ class ResponsePostprocessor:
                                 ]
                             )
 
+                        if tool_choice_function_name:
+                            delta_message.tool_calls=[
+                                DeltaToolCall(function=DeltaFunctionCall(
+                                    name=tool_choice_function_name,
+                                    arguments=delta_text),
+                                              index=i)
+                            ]
+                        elif request.tool_choice == "required":
+                            assert previous_texts is not None
+                            assert function_name_returned is not None
+                            previous_text = previous_texts[i]
+                            current_text = previous_text + delta_text
+                            fn_name_returned = function_name_returned[i]
+
+                            # TODO
+                            # delta_message, function_name_returned[i] = (
+                            #     self.extract_tool_call_required_streaming(
+                            #         previous_text=previous_text,
+                            #         current_text=current_text,
+                            #         delta_text=delta_text,
+                            #         function_name_returned=fn_name_returned))
+
+                            # update the previous values for the next iteration
+                            previous_texts[i] = current_text
+                        
+                        elif tool_choice_auto:
+                            assert _tool_parser is not None
+                            vllm_delta_message = _tool_parser.extract_tool_calls_streaming(
+                                previous_text=previous_text,
+                                current_text=current_text,
+                                delta_text=delta_text,
+                                previous_token_ids=previous_token_ids,
+                                current_token_ids=current_token_ids,
+                                delta_token_ids=result.token_ids,
+                                request=request
+                            )
+                            # logger.info(f"vllm_delta_message: {vllm_delta_message}")
+                            if vllm_delta_message:
+                                delta_message.role = vllm_delta_message.role
+                                delta_message.content = vllm_delta_message.content
+                                delta_message.reasoning_content = vllm_delta_message.reasoning_content
+                                for tool_call in vllm_delta_message.tool_calls:
+                                    delta_message.tool_calls.append(
+                                        DeltaToolCall(
+                                            id=tool_call.id,
+                                            type=tool_call.type,
+                                            index=tool_call.index,
+                                            function=DeltaFunctionCall(
+                                                name=tool_call.function.name,
+                                                arguments=tool_call.function.arguments,
+                                            ),
+                                        )   
+                                    )
+                            
+                        # update the previous values for the next iteration
+                        if tool_choice_auto:
+                            assert previous_texts is not None
+                            assert all_previous_token_ids is not None
+                            previous_texts[i] = current_text
+                            all_previous_token_ids[i] = current_token_ids
+
+                        # set the previous values for the next iteration
+                        previous_num_tokens[i] += len(result.token_ids)
+
+                        # if the message delta is None (e.g. because it was a
+                        # "control token" for tool calls or the parser otherwise
+                        # wasn't ready to send a token, then
+                        #   get the next token without streaming a chunk
+                        if delta_message is None:
+                            continue
+
                         choices = [
                             ChatCompletionResponseStreamChoice(
-                                delta=DeltaMessage(content=result.generated_text or ""),
-                                index=0,
+                                delta=delta_message,
+                                index=i,
                                 finish_reason=None,
                                 logprobs=logprobs,
                             )
                         ]
 
-                        yield ChatCompletionStreamResponse(
+
+                        resp = ChatCompletionStreamResponse(
                             id=completion_id,
                             model=model,
                             choices=choices,
                             usage=None,
                         )
+                        # logger.info(f"Yielding response: {resp}")
+                        yield resp
 
                 if had_error:
                     # Return early in case of an error
@@ -329,6 +476,9 @@ class ResponsePostprocessor:
             async for response in self._chat_completions_wrapper(
                 model=model,
                 generator=gen,
+                request=request,
+                tokenizer=tokenizer,
+                tool_parser=tool_parser,
             ):
                 yield response
         else:
@@ -356,33 +506,54 @@ class ResponsePostprocessor:
                         for logprobs in results.logprobs
                     ]
                 )
+            
+            generated_text = results.generated_text or ""
 
             message = ChatMessage(
                 role="assistant",
-                content=results.generated_text or "",
+                content=generated_text or "",
             )
-            
+
             # Handle tool calling extraction
             auto_tools_called = False
-            if request.tools and (
+            # handle when tool_choice is explicitly set to none
+            if request.tool_choice == "none":
+                logger.info("Tool choice is set to 'none', no tool calls will be made.")
+                pass
+                
+            # handle when there are tools and tool choice is auto
+            elif request.tools and (
                 request.tool_choice == "auto"
                 or request.tool_choice is None) and self.enable_auto_tools \
                     and tool_parser:
+
                 try:
                     usable_tool_parser = tool_parser(tokenizer)
-                except RuntimeError as e:
+                except Exception as e:
                     logger.exception("Error in tool parser creation.")
                     raise e
               
                 tool_call_info = usable_tool_parser.extract_tool_calls(
-                    results.generated_text or "", request=request #request isnt used for anything in relevant tool parsers
+                    generated_text, request=request
                 )
                 logger.info(f"Tool call info: {tool_call_info}")
                 auto_tools_called = tool_call_info.tools_called
                 if tool_call_info.tools_called:
                     message.tool_calls = tool_call_info.tool_calls
                     message.content = tool_call_info.content
-                    
+
+            # handle when request uses tools and specified a tool choice
+            elif request.tool_choice and type(
+                request.tool_choice) is ChatCompletionNamedToolChoiceParam:
+
+                tool_call_class = MistralToolCall if isinstance(
+                    tokenizer, MistralTokenizer) else ToolCall
+                message.content=""
+                message.tool_calls=[
+                    tool_call_class(function=FunctionCall(
+                        name=request.tool_choice.function.name,
+                        arguments=generated_text))
+                ]
 
             choices = [
                 ChatCompletionResponseChoice(

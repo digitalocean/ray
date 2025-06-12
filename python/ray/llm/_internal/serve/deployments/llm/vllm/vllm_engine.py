@@ -615,6 +615,8 @@ class VLLMEngine(LLMEngine):
                 )
                 yield LLMRawResponse(
                     generated_text=text_output,
+                    index=output.index,
+                    token_ids=output.token_ids,
                     num_generated_tokens=tokens_collected,
                     logprobs=log_probs,
                     num_generated_tokens_batch=tokens_collected,
