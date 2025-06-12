@@ -2,6 +2,8 @@ import asyncio
 import os
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, TYPE_CHECKING
+import json
+import uuid
 
 import ray
 import re
@@ -613,6 +615,10 @@ class VLLMEngine(LLMEngine):
                     log_probs_idx,
                     request.sampling_params.top_logprobs,
                 )
+
+                # Check for tool calls in the generated text
+                tool_calls = self._detect_tool_calls(text_output)
+                
                 yield LLMRawResponse(
                     generated_text=text_output,
                     num_generated_tokens=tokens_collected,
@@ -623,6 +629,7 @@ class VLLMEngine(LLMEngine):
                     preprocessing_time=0,
                     generation_time=clock.reset_interval(),
                     finish_reason=finish_reason,
+                    tool_calls=tool_calls,
                 )
 
             if request_output is not None:
@@ -863,11 +870,52 @@ class VLLMEngine(LLMEngine):
             # returned to the user is correct.
             raise ValidationError(str(e)) from e
 
-    @staticmethod
+    def _detect_tool_calls(self, text: str) -> Optional[List[ToolCall]]:
+        """Detect tool calls in the generated text.
+
+        Tool calls are expected to be in JSON format and start with "{".
+        
+        Returns:
+            List of ToolCall objects if tool calls are found, None otherwise.
+        """
+        if not text:
+            return None
+            
+        try:
+            # Look for JSON-like tool call patterns
+            tool_calls = []
+            start_idx = 0
+            while start_idx < len(text):
+                tool_start = text.find("{", start_idx)
+                if tool_start == -1:
+                    break
+                    
+                tool_end = text.find("}", tool_start)
+                if tool_end == -1:
+                    break
+                    
+                tool_json = text[tool_start:tool_end + 1]
+                tool_data = json.loads(tool_json)
+                
+                if isinstance(tool_data, dict) and "name" in tool_data:
+                    tool_calls.append(ToolCall(
+                        id=str(uuid.uuid4()),
+                        type="function",
+                        function=FunctionCall(
+                            name=tool_data["name"],
+                            arguments=tool_data.get("arguments", "{}")
+                        )
+                    ))
+                    
+                start_idx = tool_end + 1
+                
+            return tool_calls if tool_calls else None
+            
+        except (json.JSONDecodeError, KeyError):
+            return None
+
     def _extract_logprobs(
-        output: "RequestOutput",
-        log_probs_idx: int,
-        top_logprobs: Optional[int] = None,
+        self, output: "RequestOutput", log_probs_idx: int, top_logprobs: Optional[int] = None,
     ) -> Tuple[List[LogProbs], int]:
         all_log_probs = output.logprobs[log_probs_idx:] if output.logprobs else None
         return_log_probs = []

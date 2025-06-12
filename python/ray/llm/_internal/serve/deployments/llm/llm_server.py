@@ -144,12 +144,16 @@ class ResponsePostprocessor:
             async for batched_results in generator:
                 for result in batched_results.unpack():
                     all_results.append(result)
-
+                    
                     if result.error:
                         logger.error(f"{result.error}")
                         # Drop finish reason as OpenAI doesn't expect it
                         # for errors in streaming
                         result.finish_reason = None
+                        logger.error(
+                            f"Reporting back an error: {result.error}",
+                            extra={"ray_serve_extra_fields": {"response": str(result)}},
+                        )
                         all_results.pop()
                         had_error = True
 
@@ -159,6 +163,7 @@ class ResponsePostprocessor:
 
                     else:
                         finish_reason = result.finish_reason
+                        tool_calls = result.tool_calls if hasattr(result, 'tool_calls') else []
 
                         if not yielded_role:
                             choices = [
@@ -177,6 +182,37 @@ class ResponsePostprocessor:
                             )
                             yielded_role = True
 
+                        # Handle tool calls
+                        if tool_calls:
+                            for tool_call in tool_calls:
+                                choices = [
+                                    ChatCompletionResponseStreamChoice(
+                                        delta=DeltaMessage(
+                                            content="",
+                                            tool_calls=[
+                                                ToolCall(
+                                                    id=tool_call.id,
+                                                    type=tool_call.type,
+                                                    function=FunctionCall(
+                                                        name=tool_call.function.name,
+                                                        arguments=tool_call.function.arguments
+                                                    )
+                                                )
+                                            ]
+                                        ),
+                                        index=0,
+                                        finish_reason="function_call",
+                                        logprobs=None,
+                                    )
+                                ]
+                                yield ChatCompletionStreamResponse(
+                                    id=completion_id,
+                                    model=model,
+                                    choices=choices,
+                                    usage=None,
+                                )
+
+                        # Handle regular text response
                         logprobs = None
                         if result.logprobs:
                             logprobs = ChatCompletionLogProbs(

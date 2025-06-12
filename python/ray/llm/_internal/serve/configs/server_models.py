@@ -722,6 +722,8 @@ class LLMRawResponse(ComputedPropertyMixin, BaseModelExtended):
     finish_reason: Optional[str] = None
     error: Optional[ErrorResponse] = None
 
+    tool_calls: Optional[List[ToolCall]] = None
+
     @model_validator(mode="before")
     @classmethod
     def text_or_error_or_finish_reason(cls, values):
