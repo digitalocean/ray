@@ -237,7 +237,12 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = None
     tools: Optional[List[ChatCompletionToolsParam]] = None
     tool_choice: Optional[
-        Union[Literal["none"], Literal["auto"], ChatCompletionNamedToolChoiceParam]
+        Union[
+            Literal["none"],
+            Literal["auto"],
+            Literal["required"],
+            ChatCompletionNamedToolChoiceParam,
+        ]
     ] = "none"
 
     # NOTE this will be ignored by vLLM -- the model determines the behavior
