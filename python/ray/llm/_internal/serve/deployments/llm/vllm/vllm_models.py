@@ -196,10 +196,19 @@ class VLLMEngineConfig(BaseModelExtended):
         if self.resources_per_bundle:
             bundle = self.resources_per_bundle
         else:
-            bundle = {"GPU": 1}
+            bundle = {"CPU": 1}
+            # Add GPU resources if tensor parallelism is enabled
+            if self.tensor_parallel_degree > 1:
+                bundle["GPU"] = 1
+
         if self.accelerator_type:
             bundle[self.ray_accelerator_type()] = 0.001
         bundles = [bundle for _ in range(self.num_devices)]
+        
+        # Ensure we have at least one resource in each bundle
+        for bundle in bundles:
+            if not any(bundle.values()):
+                bundle["CPU"] = 1
 
         return bundles
 
