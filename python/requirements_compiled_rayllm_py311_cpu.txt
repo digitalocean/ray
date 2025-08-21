@@ -3171,9 +3171,9 @@ virtualenv==20.29.1 \
     # via
     #   -c python/requirements_compiled_rayllm_test_py311_cpu.txt
     #   -r python/requirements.txt
-vllm==0.9.0.1 \
-    --hash=sha256:a1b4e9a832241f981c0b2cbdc1daca71d3ade32f083ec6dcb0ead58a882e9fca \
-    --hash=sha256:b581df16f68f871773cf57fe8cc7737808a8745f94971e691b4113ba3b76c304
+vllm==0.10.1.1 \
+    --hash=sha256:3099824ee4bdaa14c4c4f7178a092101a0ec206d4c9371edf295849b2b730a39 \
+    --hash=sha256:8ca0dd985e1ceac8540e7719c654f1553b3ba8a43c685ac8d3fa1366ffb6443a
     # via
     #   -c python/requirements_compiled_rayllm_test_py311_cpu.txt
     #   -r python/requirements/llm/llm-requirements.txt
