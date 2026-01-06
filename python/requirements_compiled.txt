@@ -1071,7 +1071,7 @@ mock==5.1.0
     # via pytest-shutil
 modin==0.22.2 ; python_version < "3.12"
     # via -r python/requirements/ml/data-requirements.txt
-monai==1.3.2
+monai==1.5.1
     # via mosaicml
 monotonic==1.6
     # via
