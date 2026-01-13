@@ -156,7 +156,7 @@ azure-common==1.1.28
     #   azure-mgmt-compute
     #   azure-mgmt-network
     #   azure-mgmt-resource
-azure-core==1.29.5
+azure-core==1.38.0
     # via
     #   azure-identity
     #   azure-mgmt-core
