@@ -2474,7 +2474,7 @@ uvloop==0.19.0
     #   vmc-draas-client-bindings
     #   vsphere-automation-sdk
     # via vsphere-automation-sdk
-virtualenv==20.29.1
+virtualenv==20.36.1
     # via
     #   -r python/requirements.txt
     #   -r python/requirements/test-requirements.txt
