@@ -2034,7 +2034,7 @@ send2trash==1.8.3
     #   jupyter-server
     #   nbclassic
     #   notebook
-sentencepiece==0.1.96
+sentencepiece==0.2.1
     # via -r python/requirements/ml/train-test-requirements.txt
 sentry-sdk==2.10.0
     # via
