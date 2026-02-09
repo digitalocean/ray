@@ -1633,9 +1633,9 @@ nbclient==0.5.13 \
     # via
     #   -c /tmp/ray-deps/requirements_compiled.txt
     #   nbconvert
-nbconvert==6.5.4 \
-    --hash=sha256:9e3c7c6d491374cbdd5f35d268c05809357716d346f4573186bbeab32ee50bc1 \
-    --hash=sha256:d679a947f849a966cbbd0bf6e7fedcfdb64be3b20ce7cef11ad55c13f5820e19
+nbconvert==7.17.0 \
+    --hash=sha256:1b2696f1b5be12309f6c7d707c24af604b87dfaf6d950794c7b07acab96dda78 \
+    --hash=sha256:4f99a63b337b9a23504347afdab24a11faa7d86b405e5c8f9881cd313336d518
     # via
     #   -c /tmp/ray-deps/requirements_compiled.txt
     #   jupyter-server
